@@ -1,45 +1,58 @@
 <!DOCTYPE html>
 <html>
-<head>
-  <meta charset="UTF-8">
-  <title>OPAIRS Research Hub</title>
-</head>
+<head><meta charset="UTF-8"></head>
 <body>
 <script>
-/**
- * OPAIRS Research Hub – Edge Gallery JS Skill
- * Saves, organizes, and searches research links in topic collections.
- * Data persisted via localStorage on-device.
- */
-
 window.ai_edge_gallery_get_result = async function(data) {
   const STORAGE_KEY = 'opairs_hub_links';
 
   function loadLinks() {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    } catch (e) {
-      return [];
-    }
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+    catch(e) { return []; }
   }
 
   function saveLinks(links) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(links));
   }
 
-  let input;
-  try {
-    input = JSON.parse(data);
-  } catch (e) {
-    return 'Fehler: Ungültiges JSON – ' + e.message;
+  function extractDomain(url) {
+    try { return new URL(url).hostname.replace('www.',''); }
+    catch(e) { return url; }
   }
+
+  function formatDate(iso) {
+    try {
+      const d = new Date(iso);
+      return d.getDate().toString().padStart(2,'0') + '.' +
+             (d.getMonth()+1).toString().padStart(2,'0') + '.' +
+             d.getFullYear();
+    } catch(e) { return iso; }
+  }
+
+  function scoreMatch(link, q) {
+    let score = 0;
+    const ql = q.toLowerCase();
+    if (link.title.toLowerCase().includes(ql)) score += 4;
+    if (link.collection.toLowerCase().includes(ql)) score += 3;
+    if ((link.tags || []).some(t => t.toLowerCase().includes(ql))) score += 3;
+    if ((link.notes || '').toLowerCase().includes(ql)) score += 2;
+    if (link.url.toLowerCase().includes(ql)) score += 1;
+    if ((link.domain || '').toLowerCase().includes(ql)) score += 1;
+    if ((link.savedAtFormatted || '').includes(q)) score += 2;
+    if ((link.savedAt || '').includes(q)) score += 2;
+    return score;
+  }
+
+  let input;
+  try { input = JSON.parse(data); }
+  catch(e) { return 'Fehler: Ungültiges JSON – ' + e.message; }
 
   const action = (input.action || 'list').toLowerCase();
 
-  // ─── SAVE ────────────────────────────────────────────────────────────────
+  // ── SAVE ─────────────────────────────────────────────────────────────────
   if (action === 'save') {
     if (!input.url) return 'Fehler: URL fehlt.';
-
+    const now = new Date().toISOString();
     const links = loadLinks();
     const link = {
       id: Date.now().toString(),
@@ -47,137 +60,106 @@ window.ai_edge_gallery_get_result = async function(data) {
       title: (input.title || input.url).trim(),
       collection: (input.collection || 'Allgemein').trim(),
       notes: (input.notes || '').trim(),
-      savedAt: new Date().toISOString()
+      tags: Array.isArray(input.tags) ? input.tags.map(t => t.trim()).filter(Boolean) : [],
+      domain: extractDomain(input.url),
+      savedAt: now,
+      savedAtFormatted: formatDate(now)
     };
     links.push(link);
     saveLinks(links);
-
     return (
-      '✓ Gespeichert in "' + link.collection + '"\n' +
+      '✓ Gespeichert\n' +
       'Titel: ' + link.title + '\n' +
-      'URL: ' + link.url +
-      (link.notes ? '\nNotiz: ' + link.notes : '') +
-      '\nID: ' + link.id
+      'Collection: ' + link.collection + '\n' +
+      'Domain: ' + link.domain + '\n' +
+      (link.tags.length ? 'Tags: ' + link.tags.join(', ') + '\n' : '') +
+      'Datum: ' + link.savedAtFormatted + '\n' +
+      'URL: ' + link.url + '\n' +
+      'ID: ' + link.id
     );
   }
 
-  // ─── SEARCH ──────────────────────────────────────────────────────────────
+  // ── SEARCH ───────────────────────────────────────────────────────────────
   if (action === 'search') {
-    const q = (input.query || '').toLowerCase().trim();
+    const q = (input.query || '').trim();
     if (!q) return 'Fehler: Suchbegriff fehlt.';
-
     const links = loadLinks();
-    const results = links.filter(l =>
-      l.title.toLowerCase().includes(q) ||
-      l.url.toLowerCase().includes(q) ||
-      l.collection.toLowerCase().includes(q) ||
-      l.notes.toLowerCase().includes(q)
-    );
+    const results = links
+      .map(l => ({ link: l, score: scoreMatch(l, q) }))
+      .filter(r => r.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map(r => r.link);
 
-    if (results.length === 0) {
-      return 'Keine Ergebnisse für "' + input.query + '".';
-    }
+    if (results.length === 0) return 'Keine Ergebnisse für "' + q + '".';
 
-    return (
-      results.length + ' Ergebnis(se) für "' + input.query + '":\n\n' +
+    return results.length + ' Ergebnis(se) für "' + q + '":\n\n' +
       results.map(function(l) {
         return (
           '[' + l.collection + '] ' + l.title + '\n' +
-          l.url +
-          (l.notes ? '\n→ ' + l.notes : '') +
-          '\nID: ' + l.id
+          l.url + '\n' +
+          'Domain: ' + (l.domain || '–') + '\n' +
+          (l.tags && l.tags.length ? 'Tags: ' + l.tags.join(', ') + '\n' : '') +
+          'Datum: ' + (l.savedAtFormatted || '–') +
+          (l.notes ? '\n→ ' + l.notes : '') + '\n' +
+          'ID: ' + l.id
         );
-      }).join('\n\n')
-    );
+      }).join('\n\n');
   }
 
-  // ─── LIST ─────────────────────────────────────────────────────────────────
+  // ── LIST ──────────────────────────────────────────────────────────────────
   if (action === 'list') {
     const links = loadLinks();
+    if (links.length === 0) return 'Noch keine Links gespeichert.';
 
-    if (links.length === 0) {
-      return 'Noch keine Links gespeichert. Sag mir eine URL und ich speichere sie.';
-    }
-
-    // List specific collection
     if (input.collection) {
       const col = input.collection.trim();
-      const filtered = links.filter(function(l) {
-        return l.collection.toLowerCase() === col.toLowerCase();
-      });
-
-      if (filtered.length === 0) {
-        return 'Keine Links in Collection "' + col + '".';
-      }
-
-      return (
-        '📁 ' + col + ' (' + filtered.length + ' Links)\n\n' +
+      const filtered = links.filter(l => l.collection.toLowerCase() === col.toLowerCase());
+      if (filtered.length === 0) return 'Keine Links in Collection "' + col + '".';
+      return '📁 ' + col + ' (' + filtered.length + ' Links)\n\n' +
         filtered.map(function(l) {
           return (
             '• ' + l.title + '\n' +
-            '  ' + l.url +
-            (l.notes ? '\n  → ' + l.notes : '') +
-            '\n  ID: ' + l.id
+            '  ' + l.url + '\n' +
+            '  Domain: ' + (l.domain || '–') + '\n' +
+            (l.tags && l.tags.length ? '  Tags: ' + l.tags.join(', ') + '\n' : '') +
+            '  Datum: ' + (l.savedAtFormatted || '–') +
+            (l.notes ? '\n  → ' + l.notes : '') + '\n' +
+            '  ID: ' + l.id
           );
-        }).join('\n\n')
-      );
+        }).join('\n\n');
     }
 
-    // List all collections with counts
     const collections = {};
-    links.forEach(function(l) {
-      collections[l.collection] = (collections[l.collection] || 0) + 1;
-    });
-
-    const sorted = Object.entries(collections).sort(function(a, b) {
-      return b[1] - a[1];
-    });
-
-    return (
-      links.length + ' Links in ' + sorted.length + ' Collections:\n\n' +
-      sorted.map(function(entry) {
-        return '📁 ' + entry[0] + ' (' + entry[1] + ')';
-      }).join('\n')
-    );
+    links.forEach(l => { collections[l.collection] = (collections[l.collection] || 0) + 1; });
+    const sorted = Object.entries(collections).sort((a,b) => b[1] - a[1]);
+    return links.length + ' Links in ' + sorted.length + ' Collections:\n\n' +
+      sorted.map(e => '📁 ' + e[0] + ' (' + e[1] + ')').join('\n');
   }
 
-  // ─── DELETE ───────────────────────────────────────────────────────────────
+  // ── DELETE ────────────────────────────────────────────────────────────────
   if (action === 'delete') {
-    if (!input.id) return 'Fehler: ID fehlt. Bitte zuerst suchen oder listen um die ID zu ermitteln.';
-
+    if (!input.id) return 'Fehler: ID fehlt.';
     const links = loadLinks();
-    const idx = links.findIndex(function(l) { return l.id === input.id; });
-
-    if (idx === -1) {
-      return 'Link mit ID ' + input.id + ' nicht gefunden.';
-    }
-
+    const idx = links.findIndex(l => l.id === input.id);
+    if (idx === -1) return 'Link mit ID ' + input.id + ' nicht gefunden.';
     const removed = links.splice(idx, 1)[0];
     saveLinks(links);
-
-    return '✓ Gelöscht: "' + removed.title + '" aus Collection "' + removed.collection + '"';
+    return '✓ Gelöscht: "' + removed.title + '" aus "' + removed.collection + '"';
   }
 
-  // ─── CLEAR COLLECTION ─────────────────────────────────────────────────────
+  // ── CLEAR COLLECTION ──────────────────────────────────────────────────────
   if (action === 'clear_collection') {
     if (!input.collection) return 'Fehler: Collection-Name fehlt.';
-
     const links = loadLinks();
     const col = input.collection.trim();
-    const remaining = links.filter(function(l) {
-      return l.collection.toLowerCase() !== col.toLowerCase();
-    });
+    const remaining = links.filter(l => l.collection.toLowerCase() !== col.toLowerCase());
     const deleted = links.length - remaining.length;
-
-    if (deleted === 0) {
-      return 'Keine Links in Collection "' + col + '" gefunden.';
-    }
-
+    if (deleted === 0) return 'Keine Links in "' + col + '" gefunden.';
     saveLinks(remaining);
     return '✓ ' + deleted + ' Link(s) aus "' + col + '" gelöscht.';
   }
 
-  return 'Unbekannte Aktion: "' + action + '". Gültige Aktionen: save, search, list, delete, clear_collection.';
+  return 'Unbekannte Aktion: "' + action + '".';
 };
 </script>
 </body>
